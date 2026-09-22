@@ -53,9 +53,9 @@ Tracking data: Files `week[week].csv` contain player tracking data from season `
 - `absoluteYardlineNumber`: Distance from end zone for possession team (numeric)
 - `offenseFormation`: Formation used by possession team (text)
 - `personnelO`: Personnel used by offensive team (text)
-- `defendersInTheBox`: Number of defenders in close proximity to line-of-scrimmage (numeric)
+- `defendersInBox`: Number of defenders in close proximity to line-of-scrimmage (numeric)
 - `personnelD`: Personnel used by defensive team (text)
-- `dropbackType`: Dropback categorization of quarterback (text)
+- `dropBackType`: Dropback categorization of quarterback (text)
 - `pff_playAction`: indicator for whether offense executes play action fake on the play. Variable provided by PFF (binary)
 - `pff_passCoverage`: Coverage scheme of defense. Variable provided by PFF (text)
   - Possible values:
@@ -122,7 +122,7 @@ Tracking data: Files `week[week].csv` contain player tracking data from season `
 
 ## Tracking data
 
-Files `week[week].csv` contains player tracking data from week `[week]`.
+Files `tracking/tracking_[gameId].csv` contain player and ball tracking data, one file per game (122 games across Weeks 1-8). To filter by week, join `gameId` to `week` in `games.csv`.
 
 - **`gameId`**: Game identifier, unique (numeric)
 - **`playId`**: Play identifier, not unique across games (numeric)
@@ -130,7 +130,7 @@ Files `week[week].csv` contains player tracking data from week `[week]`.
 - `frameId`: Frame identifier for each play, starting at 1 (numeric)
 - `time`: Time stamp of play (time, yyyy-mm-dd, hh:mm:ss)
 - `jerseyNumber`: Jersey number of player (numeric)
-- `club`: Team abbrevation of corresponding player (text)
+- `team`: Team abbreviation of the corresponding player; value is `football` on ball rows (text)
 - `playDirection`: Direction that the offense is moving (left or right)
 - `x`: Player position along the long axis of the field, 0 - 120 yards. See Figure 1 below. (numeric)
 - `y`: Player position along the short axis of the field, 0 - 53.3 yards. See Figure 1 below. (numeric)
