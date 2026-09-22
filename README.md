@@ -17,7 +17,7 @@ Player data: The `players.csv` file contains player-level information from playe
 
 PFF Scouting data: The `pffScoutingData.csv` file contains player-level scouting information for each game and play. The *key* variables are **`gameId`**, **`playId`**, and **`nflId`**.
 
-Tracking data: Files `week[week].csv` contain player tracking data from season `[week]`. The *key* variables are **`gameId`**, **`playId`**, and **`nflId`**.
+Tracking data: Files `tracking_[gameId].csv` contain player tracking data from season `[gameId]`. The *key* variables are **`gameId`**, **`playId`**, and **`nflId`**.
 
 ## Game data
 
