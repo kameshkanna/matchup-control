@@ -1,7 +1,7 @@
 # Data Documentation
 
 
-## Dataset Description
+## Description
 
 Here, you'll find a summary of each data set for this compeition, a list of *key* variables to join on, and a description of each variable. The tracking data is provided by the NFL Next Gen Stats team. The Scouting data is provided by [Pro Football Focus](https://www.pff.com/).
 
