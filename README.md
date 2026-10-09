@@ -1,8 +1,18 @@
 # Matchup Control
 
-A unified engine for grading one-on-one battles from NFL tracking data
-(NFL Big Data Bowl 2023 regional set). Primary head: pass protection
-(blocker vs rusher), validated against PFF pressure labels.
+We have grades every one-on-one pass-protection rep — one blocker
+against the rusher PFF assigned him — using player tracking from the NFL Big
+Data Bowl 2023 regional set. For each rep we measure the geometry of the block
+(how much ground the rusher gained toward the QB, whether the blocker stayed
+attached and between the rusher and the passer) and turn it into a single
+control grade, which we validate against PFF's real hit/hurry/sack labels. A
+Streamlit dashboard displays the results: a per-lineman leaderboard filterable
+by team and position, a "how it works" page with the validation and feature
+importance, a film-room view that draws any single block as field paths plus a
+control-over-time curve, a team view, and a bonus receiver-vs-defender head. To
+run it, `pip install -r requirements.txt`, make sure the data folder is in place
+(see below), then `streamlit run matchup/app.py` from the repo root and click
+**Run pipeline** in the sidebar.
 
 See `SHARED_CONTRACT.md` for the cross-team code API (module layout,
 function signatures, dataframe schemas). **Read it before writing code.**
@@ -45,9 +55,11 @@ pip install streamlit        # if not already installed
 streamlit run matchup/app.py # launch from the repo root
 ```
 
-Opens in the browser. Pick the number of games in the sidebar and click
-**Run pipeline**. Tabs: leaderboard, charts, per-rep explorer, feature
-importance, the signature play visual, the receiver head, and the story.
+Opens in the browser. Click **Run pipeline (all games)** in the sidebar (a cold
+run takes a while; results are then cached). Tabs: **Players** (leaderboard,
+filter by team/position), **How it works** (validation + feature importance),
+**Film room** (pick a block, see its field + control-over-time visual), **Team
+view**, **Receiver head**, and **Story**.
 
 ## Who owns what (workstreams)
 

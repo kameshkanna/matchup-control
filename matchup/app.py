@@ -122,18 +122,18 @@ def rep_outcome(r):
 st.sidebar.title("Matchup Control")
 st.sidebar.caption("Grading one-on-one pass-protection battles from tracking data")
 
-# Always analyse all games; no games slider.
+# Analyse all available games.
 n_games = None  # None => all games in pipeline.run()
 run_clicked = st.sidebar.button("Run pipeline (all games)", type="primary")
 st.sidebar.caption(
     "Analyses all available games. Loads cached results instantly; click "
-    "**Run pipeline** to (re)compute from scratch."
+    "**Run pipeline** to (re)compute from scratch (a cold run can take a while)."
 )
 
 # Decide what to show: a fresh run, or whatever is cached.
 result = None
 if run_clicked:
-    with st.spinner("Running pipeline on all games… this can take a few minutes."):
+    with st.spinner("Running pipeline on all games… this can take a while."):
         result = run_pipeline(n_games)
     st.session_state["last_result"] = result
 elif "last_result" in st.session_state:
@@ -151,7 +151,7 @@ st.markdown(
 
 if result is None:
     st.info(
-        "No results loaded yet. Click **Run pipeline (all games)** in the sidebar. "
+        "No results loaded yet. Click **Run pipeline** in the sidebar. "
         "Showing any cached leaderboard below if present."
     )
     board = load_cached_leaderboard(n_games)
@@ -218,7 +218,7 @@ with tab_players:
 
         # ---- Filters: scope, team, position --------------------------------
         f1, f2, f3 = st.columns(3)
-        scope = f1.selectbox("Scope", ["All games", "By team"], index=0,
+        scope = f1.selectbox("Scope", ["All teams", "By team"], index=0,
                              help="Narrow the leaderboard to a single team's linemen.")
         teams = sorted(board["team"].dropna().unique().tolist()) \
             if "team" in board.columns else []
@@ -301,29 +301,13 @@ describe pass protection:
 - **Mirroring** — how well the blocker's movement direction matches the rusher's.
 - **Rusher speed / acceleration late in the rep** — a rusher still accelerating at
   the QB near the end is winning.
-
-All features are signed so that **higher = the blocker won**.
-""")
-
-    st.markdown("""
-**Turning features into one number.** We don't hand-pick weights for the final
-grade. Instead a gradient-boosted tree model (sklearn `HistGradientBoostingClassifier`)
-is trained to predict the real outcome — did this rep concede a hit, hurry, or
-sack (PFF's `pressure_allowed`). The model's predicted pressure probability is
-flipped into the **control grade**: high grade = low modelled chance of pressure
-= the blocker won. Using the model, rather than fixed weights, lets the metric
-learn interactions — e.g. giving up ground only matters when separation also
-collapses — that a simple weighted sum would miss.
 """)
 
     auc_v = validation.get("auc")
     if isinstance(auc_v, (int, float)):
         st.markdown(
-            f"**Validation — AUC = {auc_v:.2f}.** Take one rep that gave up pressure and "
-            "one that didn't; the tracking-only grade ranks the worse block lower "
-            f"about **{auc_v*100:.0f}%** of the time (50% = a coin flip). The grade is "
-            "built from geometry alone and never sees the PFF label, so this is a real "
-            "check that it measures blocking."
+            f"**Validation — AUC = {auc_v:.2f}.** On a pressure rep vs a clean rep, the "
+            f"grade ranks the worse block lower ~{auc_v*100:.0f}% of the time."
         )
     else:
         st.info("Run the pipeline to compute validation.")
