@@ -121,18 +121,50 @@ def rep_outcome(r):
 st.sidebar.title("Matchup Control")
 st.sidebar.caption("Grading one-on-one pass-protection battles from tracking data")
 
-# Analyse all available games.
-n_games = None  # None => all games in pipeline.run()
-run_clicked = st.sidebar.button("Run pipeline (all games)", type="primary")
+# How many games to analyse. A small number is fast; "All games" runs the full
+# 122-game dataset and can take ~25-40 minutes on a cold run.
+all_games = st.sidebar.checkbox(
+    "All games (slow)",
+    value=False,
+    help="Run every available game (~122). A cold full run can take 25-40 minutes. "
+    "Leave this off and use the slider for a fast run.",
+)
+
+if all_games:
+    n_games = None  # None => all games in pipeline.run()
+    st.sidebar.warning(
+        "⚠️ All games selected. A cold run processes the full ~122-game dataset and "
+        "can take **25-40 minutes**. Cached results (if any) still load instantly."
+    )
+else:
+    n_games = st.sidebar.slider(
+        "Number of games",
+        min_value=1,
+        max_value=30,
+        value=5,
+        help="Fewer games = faster. Roughly ~15-25 seconds per game on a cold run.",
+    )
+    # Rough cold-run estimate so the user knows what to expect before clicking.
+    est_min = n_games * 20 / 60.0
+    st.sidebar.caption(f"Estimated cold run: ~{est_min:.0f}-{est_min*2:.0f} min "
+                       f"({n_games} game{'s' if n_games != 1 else ''}).")
+
+run_label = "Run pipeline (all games)" if all_games else f"Run pipeline ({n_games} games)"
+run_clicked = st.sidebar.button(run_label, type="primary")
 st.sidebar.caption(
-    "Analyses all available games. Loads cached results instantly; click "
-    "**Run pipeline** to (re)compute from scratch (a cold run can take a while)."
+    "Loads cached results instantly; click **Run pipeline** to (re)compute from "
+    "scratch for the selected number of games."
 )
 
 # Decide what to show: a fresh run, or whatever is cached.
 result = None
 if run_clicked:
-    with st.spinner("Running pipeline on all games… this can take a while."):
+    spin_msg = (
+        "Running pipeline on all games… this can take 25-40 minutes."
+        if all_games
+        else f"Running pipeline on {n_games} game(s)…"
+    )
+    with st.spinner(spin_msg):
         result = run_pipeline(n_games)
     st.session_state["last_result"] = result
 elif "last_result" in st.session_state:
@@ -150,8 +182,8 @@ st.markdown(
 
 if result is None:
     st.info(
-        "No results loaded yet. Click **Run pipeline** in the sidebar. "
-        "Showing any cached leaderboard below if present."
+        "No results loaded yet. Pick the number of games in the sidebar and click "
+        "**Run pipeline**. Showing any cached leaderboard below if present."
     )
     board = load_cached_leaderboard(n_games)
     if board is not None:
