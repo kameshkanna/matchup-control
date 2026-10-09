@@ -1,0 +1,26 @@
+# ----- Data (833 MB, everyone has it locally; NEVER commit) -----
+nfl-big-data-bowl-regional-event-data/
+
+# ----- Cache + generated artifacts -----
+cache/
+*.parquet
+*.png
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# ----- OS / editor -----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ----- scratch -----
+_profile*.py
+_smoke_*.txt
