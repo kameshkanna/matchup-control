@@ -12,7 +12,6 @@ read defensively, so this keeps working as teammates change scoring/validation.
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -197,9 +196,9 @@ for key, label in [
 #   How it works → "does the metric work?" (validation + method)
 #   Film room  → "what happened on this block?" (pick a rep, see the visual)
 # --------------------------------------------------------------------------- #
-tab_players, tab_how, tab_film, tab_team, tab_recv, tab_story = st.tabs(
+tab_players, tab_how, tab_film, tab_team, tab_recv = st.tabs(
     ["🏆 Players", "📊 How it works", "🎬 Film room", "🤝 Team view",
-     "🏃 Receiver head", "📖 Story"]
+     "🏃 Receiver head"]
 )
 
 # ===== TAB 1: PLAYERS =======================================================
@@ -381,6 +380,12 @@ with tab_film:
                     int(row["blocker_id"]), int(row["rusher_id"]),
                 )
                 st.pyplot(fig, use_container_width=True)
+                # Short per-rep story summarising what this graph shows.
+                if story is not None:
+                    try:
+                        st.info(story.rep_story_block(row))
+                    except Exception:
+                        pass
             except Exception as e:
                 st.error(f"Could not render this rep: {e}")
 
@@ -548,65 +553,16 @@ with tab_recv:
                             int(pick_row["blocker_id"]), int(pick_row["rusher_id"]),
                         )
                         st.pyplot(fig, use_container_width=True)
+                        # Short per-rep story under the receiver graph.
+                        if story is not None:
+                            try:
+                                st.info(story.rep_story_receiver(pick_row))
+                            except Exception:
+                                pass
                     else:
                         st.info("No man-coverage pair to visualise on this play.")
             except Exception as e:
                 st.error(f"Receiver head failed: {e}")
 
 
-# --------------------------------------------------------------------------- #
-# Story — the end-to-end narrative
-# --------------------------------------------------------------------------- #
-with tab_story:
-    if story is None:
-        st.info("story module not available.")
-    else:
-        st.subheader("The one-minute story")
-        st.caption("Football is really thousands of one-on-one battles. "
-                   "One engine grades them, proven on pass protection.")
-        if st.button("Build story"):
-            with st.spinner("Assembling the story…"):
-                try:
-                    out = story.build_story()
-                except Exception as e:
-                    st.error(f"Story build failed: {e}")
-                    out = None
 
-            if out is not None:
-                figs = out.get("figures", {})
-                val = out.get("validation", {}) or {}
-                lb = out.get("leaderboard")
-
-                # 1. One battle — the ONLY figure unique to the story. The score
-                #    distribution / headline charts live on "How it works", so we
-                #    deliberately do NOT re-render them here (no duplicate images).
-                st.markdown("**1. One battle** — a confirmed blocker loss. The "
-                            "rusher closes on the QB as the block breaks down.")
-                hero = figs.get("golden_matchup")
-                if hero and os.path.exists(hero):
-                    st.image(hero, use_container_width=True)
-
-                # 2. Does it work — just the headline number, no chart.
-                auc_s = val.get("auc")
-                auc_txt = f"{auc_s:.2f}" if isinstance(auc_s, (int, float)) else "—"
-                st.markdown(
-                    f"**2. Does it work?** The grade uses geometry only, never the "
-                    f"PFF label — yet it ranks pressure reps below clean ones with "
-                    f"**AUC {auc_txt}**. (Full charts on *How it works*.)"
-                )
-
-                # 3. The league — a compact top-5, no bar chart.
-                st.markdown("**3. The league** — best pass protectors, "
-                            "opponent-adjusted:")
-                if lb is not None and len(lb):
-                    cols = [c for c in ["blocker_name", "blocker_pos", "team",
-                                        "adj_win_rate"] if c in lb.columns]
-                    top5 = lb.head(5)[cols].rename(columns={
-                        "blocker_name": "Player", "blocker_pos": "Pos",
-                        "team": "Team", "adj_win_rate": "Win rate (vs opp.)"})
-                    if "Win rate (vs opp.)" in top5.columns:
-                        top5["Win rate (vs opp.)"] = (top5["Win rate (vs opp.)"] * 100).round(1)
-                    st.dataframe(top5, use_container_width=True, hide_index=True)
-
-                st.caption("Two players, a few seconds, one question — who "
-                           "controlled whom?")
