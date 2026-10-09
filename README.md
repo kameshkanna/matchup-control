@@ -38,6 +38,17 @@ python run_demo.py 5         # scores 5 games, prints validation + leaderboard
 
 The demo writes `cache/scored_demo.csv`.
 
+## Dashboard (UI)
+
+```bash
+pip install streamlit        # if not already installed
+streamlit run matchup/app.py # launch from the repo root
+```
+
+Opens in the browser. Pick the number of games in the sidebar and click
+**Run pipeline**. Tabs: leaderboard, charts, per-rep explorer, feature
+importance, the signature play visual, the receiver head, and the story.
+
 ## Who owns what (workstreams)
 
 - **Person A** — engine/metric: `io_load`, `pairing`, `features`, `score`, `stunts`, `pipeline`

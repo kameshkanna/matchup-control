@@ -254,7 +254,12 @@ def plot_validation(scored: pd.DataFrame) -> matplotlib.figure.Figure:
     # Separation panel.
     clean = ws[y == 0]
     pressure = ws[y == 1]
-    ax_box.boxplot([clean, pressure], tick_labels=["clean (0)", "pressure (1)"])
+    # matplotlib >=3.9 renamed `labels` -> `tick_labels`; support both versions.
+    _box_labels = ["clean (0)", "pressure (1)"]
+    try:
+        ax_box.boxplot([clean, pressure], tick_labels=_box_labels)
+    except TypeError:
+        ax_box.boxplot([clean, pressure], labels=_box_labels)
     ax_box.set_ylabel("win_score")
     ax_box.set_title(f"win_score by outcome (corr = {report['corr']:.3f})")
 

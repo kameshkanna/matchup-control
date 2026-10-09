@@ -83,8 +83,6 @@ def run(n_games: int | None = 15, use_cache: bool = True) -> dict:
     result = {"matchups": matchups, "scored": scored}
 
     # 6: fit the gradient-boosting Control Score against PFF pressure labels.
-    # (Replaces the linear re-score: GBM captures feature interactions and
-    # gives a 0-100 score where higher = blocker won.)
     try:
         from . import validate
         model, feats = score.fit_gbm_scorer(scored)
@@ -157,7 +155,7 @@ def _summarise(result: dict) -> str:
     if "validation" in result:
         lines.append(f"validation: {result['validation']}")
     if "validation_error" in result:
-        lines.append(f"(validate.py not ready yet: {result['validation_error']})")
+        lines.append(f"(scoring step failed: {result['validation_error']})")
     if "feature_importance" in result:
         lines.append("\nwhat predicts a lost block (GBM permutation importance):")
         for _, row in result["feature_importance"].head(8).iterrows():
