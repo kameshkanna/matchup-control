@@ -12,6 +12,7 @@ read defensively, so this keeps working as teammates change scoring/validation.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -43,6 +44,10 @@ try:
     from matchup import story
 except Exception:  # pragma: no cover
     story = None
+try:
+    from matchup import labels as mlabels
+except Exception:  # pragma: no cover
+    mlabels = None
 
 st.set_page_config(page_title="Matchup Control", layout="wide")
 
@@ -192,8 +197,9 @@ for key, label in [
 #   How it works → "does the metric work?" (validation + method)
 #   Film room  → "what happened on this block?" (pick a rep, see the visual)
 # --------------------------------------------------------------------------- #
-tab_players, tab_how, tab_film, tab_recv, tab_story = st.tabs(
-    ["🏆 Players", "📊 How it works", "🎬 Film room", "🏃 Receiver head", "📖 Story"]
+tab_players, tab_how, tab_film, tab_team, tab_recv, tab_story = st.tabs(
+    ["🏆 Players", "📊 How it works", "🎬 Film room", "🤝 Team view",
+     "🏃 Receiver head", "📖 Story"]
 )
 
 # ===== TAB 1: PLAYERS =======================================================
@@ -417,6 +423,110 @@ with tab_film:
 
 
 # --------------------------------------------------------------------------- #
+# Shared selector: pick a game by "team vs team" and a play by readable name.
+# (Person C) Used by the Receiver head tab in place of raw numeric id inputs.
+# --------------------------------------------------------------------------- #
+def pick_game_and_play(key_prefix: str, man_only: bool = False):
+    """Render team-search → game → play dropdowns. Returns (game_id, play_id).
+
+    Falls back to the golden rep's game/play if the labels module is missing.
+    When ``man_only`` is True, the play dropdown lists only man-coverage plays —
+    the ones the receiver head can actually visualise.
+    """
+    if mlabels is None:
+        st.caption("labels module unavailable — using numeric ids.")
+        g = st.number_input("game_id", value=int(C.GOLDEN_GAME), step=1,
+                            format="%d", key=f"{key_prefix}_g")
+        p = st.number_input("play_id", value=int(C.GOLDEN_PLAY), step=1,
+                            format="%d", key=f"{key_prefix}_p")
+        return int(g), int(p)
+
+    teams = mlabels.list_teams()
+    c_team, c_game = st.columns([1, 2])
+    team = c_team.selectbox("Search team", ["(all teams)"] + teams,
+                            key=f"{key_prefix}_team")
+    team_filter = None if team == "(all teams)" else team
+    games = mlabels.games_for_team(team_filter)
+    if not len(games):
+        st.info("No games for that team.")
+        return None, None
+    g_idx = c_game.selectbox(
+        "Game (team vs team)", range(len(games)),
+        format_func=lambda i: games["label"].iloc[i], key=f"{key_prefix}_game"
+    )
+    game_id = int(games["game_id"].iloc[g_idx])
+
+    plays = mlabels.plays_for_game(game_id, man_only=man_only)
+    if not len(plays):
+        msg = ("No man-coverage pass plays in this game — pick another game."
+               if man_only else "No plays for that game.")
+        st.info(msg)
+        return game_id, None
+    p_idx = st.selectbox(
+        "Play", range(len(plays)),
+        format_func=lambda i: plays["label"].iloc[i], key=f"{key_prefix}_play"
+    )
+    play_id = int(plays["play_id"].iloc[p_idx])
+    return game_id, play_id
+
+
+# --------------------------------------------------------------------------- #
+# Team view — the match read "as a team": individual scores aggregated per team
+# (Person C)
+# --------------------------------------------------------------------------- #
+with tab_team:
+    if mlabels is None:
+        st.info("labels module not available.")
+    elif scored is None or len(scored) == 0:
+        st.info("Run the pipeline first to aggregate team scores.")
+    else:
+        st.subheader("Match as a team")
+        st.caption("Every one-on-one battle rolled up to the team: this is the "
+                   "offense's pass-protection performance, not a single rep.")
+
+        teams = mlabels.list_teams()
+        team = st.selectbox("Search team (optional)", ["(all teams)"] + teams,
+                            key="team_view_team")
+        team_filter = None if team == "(all teams)" else team
+        games = mlabels.games_for_team(team_filter)
+
+        scope = st.radio("Scope", ["Single game", "All loaded games"],
+                         horizontal=True, key="team_view_scope")
+
+        tboard = None
+        if scope == "Single game" and len(games):
+            g_idx = st.selectbox(
+                "Game (team vs team)", range(len(games)),
+                format_func=lambda i: games["label"].iloc[i], key="team_view_game"
+            )
+            game_id = int(games["game_id"].iloc[g_idx])
+            st.markdown(f"**{mlabels.game_label(game_id)}**")
+            tboard = mlabels.team_scoreboard(scored, game_id=game_id)
+            if not len(tboard):
+                st.info("This game isn't in the loaded set — run the pipeline on "
+                        "all games to include it.")
+        else:
+            tboard = mlabels.team_scoreboard(scored)
+            if team_filter is not None:
+                tboard = tboard[tboard["team"] == team_filter]
+
+        if tboard is not None and len(tboard):
+            st.dataframe(
+                tboard.rename(columns={
+                    "team": "Team", "n_reps": "Blocks graded",
+                    "win_rate": "Win rate", "mean_win_score": "Control margin",
+                    "pressures_allowed": "Pressures allowed",
+                    "pressure_rate": "Pressure rate",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+            if "mean_win_score" in tboard.columns:
+                st.bar_chart(tboard.set_index("team")["mean_win_score"], height=320)
+            st.caption("Higher control margin = that offense won more of its "
+                       "blocking battles. Pressures allowed is the team total.")
+
+
+# --------------------------------------------------------------------------- #
 # Receiver head — same engine, receiver vs coverage defender
 # --------------------------------------------------------------------------- #
 with tab_recv:
@@ -424,12 +534,16 @@ with tab_recv:
         st.info("receiver/viz modules not available.")
     else:
         st.subheader("Bonus: the same engine on receivers")
-        st.caption("Receiver vs nearest coverage defender (man coverage). "
-                   "The identical control engine, applied to route-running.")
-        colg, colp = st.columns(2)
-        g_in = colg.number_input("game_id", value=int(C.GOLDEN_GAME), step=1, format="%d")
-        p_in = colp.number_input("play_id", value=int(C.GOLDEN_PLAY), step=1, format="%d")
-        if st.button("Load receiver matchups"):
+        st.caption("Receiver vs nearest coverage defender. The identical control "
+                   "engine, applied to route-running. Only **man-coverage** plays "
+                   "are listed — the receiver head can't pair reliably in zone.")
+
+        g_in, p_in = pick_game_and_play("recv", man_only=True)
+        if mlabels is not None and g_in is not None and p_in is not None:
+            st.caption(f"Selected: {mlabels.game_label(g_in)} — "
+                       f"{mlabels.play_label(g_in, p_in)}")
+
+        if g_in is not None and p_in is not None and st.button("Load receiver matchups"):
             try:
                 rm = receiver.get_receiver_matchups(int(g_in), int(p_in))
                 if len(rm) == 0:
@@ -463,19 +577,52 @@ with tab_story:
     if story is None:
         st.info("story module not available.")
     else:
-        st.subheader("The end-to-end story")
-        st.caption("One battle → validation → the league. Builds figures and a "
-                   "narrative tying the project together.")
+        st.subheader("The one-minute story")
+        st.caption("Football is really thousands of one-on-one battles. "
+                   "One engine grades them, proven on pass protection.")
         if st.button("Build story"):
             with st.spinner("Assembling the story…"):
                 try:
                     out = story.build_story()
-                    md = out.get("narrative_md", "")
-                    # Render markdown, but swap image refs for absolute paths so
-                    # Streamlit can display the figures.
-                    st.markdown(md)
-                    for name, path in out.get("figures", {}).items():
-                        if C.CACHE_DIR.joinpath(path).exists() or __import__("os").path.exists(path):
-                            st.image(path, caption=name, use_container_width=True)
                 except Exception as e:
                     st.error(f"Story build failed: {e}")
+                    out = None
+
+            if out is not None:
+                figs = out.get("figures", {})
+                val = out.get("validation", {}) or {}
+                lb = out.get("leaderboard")
+
+                # 1. One battle — the ONLY figure unique to the story. The score
+                #    distribution / headline charts live on "How it works", so we
+                #    deliberately do NOT re-render them here (no duplicate images).
+                st.markdown("**1. One battle** — a confirmed blocker loss. The "
+                            "rusher closes on the QB as the block breaks down.")
+                hero = figs.get("golden_matchup")
+                if hero and os.path.exists(hero):
+                    st.image(hero, use_container_width=True)
+
+                # 2. Does it work — just the headline number, no chart.
+                auc_s = val.get("auc")
+                auc_txt = f"{auc_s:.2f}" if isinstance(auc_s, (int, float)) else "—"
+                st.markdown(
+                    f"**2. Does it work?** The grade uses geometry only, never the "
+                    f"PFF label — yet it ranks pressure reps below clean ones with "
+                    f"**AUC {auc_txt}**. (Full charts on *How it works*.)"
+                )
+
+                # 3. The league — a compact top-5, no bar chart.
+                st.markdown("**3. The league** — best pass protectors, "
+                            "opponent-adjusted:")
+                if lb is not None and len(lb):
+                    cols = [c for c in ["blocker_name", "blocker_pos", "team",
+                                        "adj_win_rate"] if c in lb.columns]
+                    top5 = lb.head(5)[cols].rename(columns={
+                        "blocker_name": "Player", "blocker_pos": "Pos",
+                        "team": "Team", "adj_win_rate": "Win rate (vs opp.)"})
+                    if "Win rate (vs opp.)" in top5.columns:
+                        top5["Win rate (vs opp.)"] = (top5["Win rate (vs opp.)"] * 100).round(1)
+                    st.dataframe(top5, use_container_width=True, hide_index=True)
+
+                st.caption("Two players, a few seconds, one question — who "
+                           "controlled whom?")
