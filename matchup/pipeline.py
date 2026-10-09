@@ -30,6 +30,34 @@ def select_game_ids(n: int | None) -> list[int]:
     return ids if n is None else ids[:n]
 
 
+_OL_POS = {"T", "OT", "LT", "RT", "G", "OG", "LG", "RG", "C"}
+
+
+def _ol_only(scored):
+    """Keep only true offensive linemen (T/G/C) so stray RB/TE pass-protection
+    reps don't pollute the lineman leaderboard."""
+    if "blocker_pos" not in scored.columns:
+        return scored
+    pos = scored["blocker_pos"].astype(str).str.upper()
+    return scored[pos.isin(_OL_POS)]
+
+
+def _save_importance_chart(imp_df, path):
+    """Horizontal bar chart of permutation feature importance (the 'what makes
+    a block win or lose' story)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    d = imp_df.sort_values("importance")
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.barh(d["feature"], d["importance"], color="C0")
+    ax.set_xlabel("permutation importance (drop in accuracy)")
+    ax.set_title("What separates a won block from a lost one")
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+
+
 def run(n_games: int | None = 15, use_cache: bool = True) -> dict:
     """Build the full scored table (and leaderboard if Person B's modules are
     present). Returns a dict of the key DataFrames and writes parquet caches."""
@@ -54,27 +82,61 @@ def run(n_games: int | None = 15, use_cache: bool = True) -> dict:
 
     result = {"matchups": matchups, "scored": scored}
 
-    # 6: calibrate weights against PFF labels, re-score (Person B)
+    # 6: fit the gradient-boosting Control Score against PFF pressure labels.
+    # (Replaces the linear re-score: GBM captures feature interactions and
+    # gives a 0-100 score where higher = blocker won.)
     try:
         from . import validate
-        weights = validate.calibrate_weights(scored)
-        scored = score.score_matchups(scored, weights=weights)
-        scored = stunts.resolve_attribution(scored)
+        model, feats = score.fit_gbm_scorer(scored)
+        scored = score.gbm_win_score(scored, model, feats)
         result["scored"] = scored
-        result["weights"] = weights
+        result["gbm_model"] = model
+        result["gbm_features"] = feats
         result["validation"] = validate.validation_report(scored)
+        result["feature_importance"] = score.gbm_feature_importance(scored, model, feats)
     except Exception as e:
         result["validation_error"] = str(e)
 
-    # 8: opponent adjustment + leaderboard (Person B)
+    # 8: opponent adjustment + leaderboard (Person B), OL-only (T/G/C).
     try:
         from . import leaderboard
-        adj = leaderboard.opponent_adjust(result["scored"])
+        board_input = _ol_only(result["scored"])
+        adj = leaderboard.opponent_adjust(board_input)
         board = leaderboard.player_leaderboard(adj)
+        # Rank by continuous score, not the saturated win-rate flag.
+        rank_col = "adj_mean_win_score" if "adj_mean_win_score" in board.columns \
+            else ("mean_win_score" if "mean_win_score" in board.columns else None)
+        if rank_col:
+            board = board.sort_values(rank_col, ascending=False).reset_index(drop=True)
         result["leaderboard"] = board
         C.cache_write(board, f"leaderboard_{tag}games")
     except Exception as e:
         result["leaderboard_error"] = str(e)
+
+    # 10: evidence charts + validation + feature-importance -> PNGs
+    figs = []
+    try:
+        from . import evidence
+        evidence.plot_score_distribution(result["scored"]).savefig(
+            C.CACHE_DIR / "fig_score_distribution.png", dpi=120)
+        figs.append("fig_score_distribution.png")
+    except Exception as e:
+        result["figure_error_dist"] = str(e)
+    try:
+        from . import validate
+        validate.plot_validation(result["scored"]).savefig(
+            C.CACHE_DIR / "fig_validation.png", dpi=120)
+        figs.append("fig_validation.png")
+    except Exception as e:
+        result["figure_error_val"] = str(e)
+    if "feature_importance" in result:
+        try:
+            _save_importance_chart(result["feature_importance"],
+                                   C.CACHE_DIR / "fig_feature_importance.png")
+            figs.append("fig_feature_importance.png")
+        except Exception as e:
+            result["figure_error_imp"] = str(e)
+    result["figures"] = figs
 
     return result
 
@@ -96,11 +158,21 @@ def _summarise(result: dict) -> str:
         lines.append(f"validation: {result['validation']}")
     if "validation_error" in result:
         lines.append(f"(validate.py not ready yet: {result['validation_error']})")
+    if "feature_importance" in result:
+        lines.append("\nwhat predicts a lost block (GBM permutation importance):")
+        for _, row in result["feature_importance"].head(8).iterrows():
+            lines.append(f"    {row['feature']:22s} {row['importance']:+.4f}")
     if "leaderboard" in result:
-        lines.append("top 10 blockers (by available ranking col):")
+        lines.append("\ntop 10 blockers:")
         lines.append(result["leaderboard"].head(10).to_string(index=False))
+        lines.append("\nbottom 5 blockers:")
+        lines.append(result["leaderboard"].tail(5).to_string(index=False))
     if "leaderboard_error" in result:
-        lines.append(f"(leaderboard.py not ready yet: {result['leaderboard_error']})")
+        lines.append(f"(leaderboard step failed: {result['leaderboard_error']})")
+    if "figures" in result:
+        lines.append(f"\nsaved charts to cache/: {', '.join(result['figures'])}")
+    if "figure_error" in result:
+        lines.append(f"(chart step failed: {result['figure_error']})")
     return "\n".join(lines)
 
 

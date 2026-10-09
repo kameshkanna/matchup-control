@@ -207,6 +207,109 @@ def build_scored(
 
 
 # ---------------------------------------------------------------------------
+# Gradient-boosting scorer (the model we actually use)
+#
+# Trains sklearn's HistGradientBoostingClassifier to predict pressure_allowed
+# from the control features, then turns the predicted pressure probability into
+# a "Control Score" on a 0-100 scale where HIGHER = the blocker won (less
+# pressure). Captures non-linear feature interactions a linear model can't, and
+# exposes permutation feature importance for the story. No extra dependency.
+# ---------------------------------------------------------------------------
+GBM_FEATURES = [
+    "ground_given_up", "min_rusher_to_qb_dist", "penetration_past_los",
+    "sep_mean", "sep_min", "betweenness_mean", "betweenness_end",
+    "mirroring_mean", "rusher_speed_late", "rusher_accel_late",
+    "rep_duration_sec",
+]
+
+
+def fit_gbm_scorer(scored: pd.DataFrame, features: list[str] | None = None):
+    """Fit a gradient-boosting model: features -> pressure_allowed.
+
+    Returns (model, features_used). Uses only pairing_ok reps with finite
+    features and a known label. The model predicts the probability a rep
+    conceded pressure (a blocker loss).
+    """
+    from sklearn.ensemble import HistGradientBoostingClassifier
+
+    feats = features or [f for f in GBM_FEATURES if f in scored.columns]
+    work = scored.copy()
+    if "pairing_ok" in work.columns:
+        work = work[work["pairing_ok"].astype(bool)]
+    X = work[feats].apply(pd.to_numeric, errors="coerce")
+    y = pd.to_numeric(work["pressure_allowed"], errors="coerce")
+    ok = X.notna().all(axis=1) & y.notna()
+    X, y = X[ok], y[ok].astype(int)
+    if y.nunique() < 2 or len(y) < 50:
+        raise ValueError("not enough signal to fit GBM (need both classes, >=50 reps)")
+
+    model = HistGradientBoostingClassifier(
+        max_depth=3, max_iter=200, learning_rate=0.06,
+        l2_regularization=1.0, class_weight="balanced", random_state=0,
+    )
+    model.fit(X, y)
+    return model, feats
+
+
+def gbm_win_score(scored: pd.DataFrame, model, features: list[str]) -> pd.DataFrame:
+    """Add a GBM-based win_score, CENTERED AT 0 so higher = blocker won.
+
+    win_score = log-odds that the rep was CLEAN (no pressure):
+        win_score = logit(1 - P(pressure)) = -logit(P(pressure))
+    This is positive when the blocker likely won, negative when he likely lost,
+    so the existing `win_score >= 0` win/loss threshold (shared with the
+    leaderboard) spreads win-rate out instead of saturating at 100%.
+
+    Also exposes:
+      pressure_prob   — raw P(pressure) in [0,1]
+      control_0_100   — a friendly 0-100 version (100*(1-P(pressure))) for display
+    Keeps the previous linear score as win_score_linear.
+    """
+    df = scored.copy()
+    X = df[features].apply(pd.to_numeric, errors="coerce")
+    ok = X.notna().all(axis=1)
+    p_pressure = np.full(len(df), np.nan)
+    if ok.any():
+        p_pressure[ok.to_numpy()] = model.predict_proba(X[ok])[:, 1]
+
+    eps = 1e-6
+    p_clip = np.clip(p_pressure, eps, 1 - eps)
+    win_score = np.log((1 - p_clip) / p_clip)       # +ve => clean/won, -ve => lost
+
+    if "win_score" in df.columns:
+        df["win_score_linear"] = df["win_score"]
+    df["pressure_prob"] = p_pressure
+    df["control_0_100"] = 100.0 * (1.0 - p_pressure)
+    df["win_score"] = win_score
+    df["win_flag"] = np.where(np.isnan(win_score), 0, (win_score >= 0.0).astype(int))
+    return df
+
+
+def gbm_feature_importance(scored: pd.DataFrame, model, features: list[str],
+                           n_repeats: int = 10) -> pd.DataFrame:
+    """Permutation importance of each feature for predicting pressure.
+
+    Returns a DataFrame [feature, importance] sorted desc — the storytelling
+    chart: "here's what actually separates a won block from a lost one."
+    """
+    from sklearn.inspection import permutation_importance
+
+    work = scored.copy()
+    if "pairing_ok" in work.columns:
+        work = work[work["pairing_ok"].astype(bool)]
+    X = work[features].apply(pd.to_numeric, errors="coerce")
+    y = pd.to_numeric(work["pressure_allowed"], errors="coerce")
+    ok = X.notna().all(axis=1) & y.notna()
+    X, y = X[ok], y[ok].astype(int)
+    r = permutation_importance(model, X, y, n_repeats=n_repeats, random_state=0)
+    return (
+        pd.DataFrame({"feature": features, "importance": r.importances_mean})
+        .sort_values("importance", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Smoke test — 5 hand-pickable reps on the golden play, ordering should be sane
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":

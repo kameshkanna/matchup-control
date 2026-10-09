@@ -31,7 +31,34 @@ import pandas as pd
 # --------------------------------------------------------------------------- #
 PACKAGE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = PACKAGE_DIR.parent
-DATA_DIR = ROOT_DIR / "data"
+
+
+def _resolve_data_dir() -> Path:
+    """Find the data folder, wherever a teammate put it.
+
+    Different machines lay the dataset out differently (some use ``data/``,
+    some keep the full ``nfl-big-data-bowl-regional-event-data/data/`` name,
+    and a MATCHUP_DATA_DIR env var overrides everything). We pick the first
+    candidate that actually contains games.csv so NO ONE has to keep editing
+    this line. Falls back to ROOT_DIR/"data" if none exist yet.
+    """
+    import os
+
+    candidates = []
+    env = os.environ.get("MATCHUP_DATA_DIR")
+    if env:
+        candidates.append(Path(env))
+    candidates += [
+        ROOT_DIR / "data",
+        ROOT_DIR / "nfl-big-data-bowl-regional-event-data" / "data",
+    ]
+    for c in candidates:
+        if (c / "games.csv").exists():
+            return c
+    return ROOT_DIR / "data"
+
+
+DATA_DIR = _resolve_data_dir()
 TRACKING_DIR = DATA_DIR / "tracking"
 CACHE_DIR = ROOT_DIR / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
