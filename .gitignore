@@ -32,3 +32,7 @@ Thumbs.db
 # ----- scratch -----
 _profile*.py
 _smoke_*.txt
+
+# ----- serve cache layer (experimental; kept out of the submission repo) -----
+matchup/serve.py
+cache/serve/
