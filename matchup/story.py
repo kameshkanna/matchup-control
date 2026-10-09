@@ -246,6 +246,105 @@ answers it, validated where ground truth exists, and reused where it does not.
 """
 
 
+# --------------------------------------------------------------------------- #
+# Per-rep stories — a short, specific summary to show UNDER one rep's graph.
+# These read the actual geometry of the chosen rep (not the whole dataset) so
+# the caption describes what THAT graph shows.
+# --------------------------------------------------------------------------- #
+def _control_summary(game_id, play_id, blocker_id, rusher_id):
+    """Return (start_dist, end_dist, min_dist, bet_start, bet_end, n_sec) for a
+    rep's rusher->QB distance and betweenness, or None if no frames."""
+    try:
+        rt = up.rep_tracks(game_id, play_id, blocker_id, rusher_id).dropna(
+            subset=["blk_x", "rsh_x"]
+        )
+        if not len(rt):
+            return None
+        cts = up.control_ts(rt)
+        d = cts["rusher_to_qb_dist"]
+        b = cts["betweenness"]
+        return (
+            float(d.iloc[0]), float(d.iloc[-1]), float(d.min()),
+            float(b.iloc[0]), float(b.iloc[-1]), float(rt["t_sec"].iloc[-1]),
+        )
+    except Exception:
+        return None
+
+
+def rep_story_block(row) -> str:
+    """One-paragraph plain-English summary of a pass-block rep (for a caption).
+
+    ``row`` is a scored/matchups row (Series or dict-like) with blocker/rusher
+    names, ids, outcome labels, and ``game_id``/``play_id``.
+    """
+    def _g(k, default=None):
+        try:
+            return row[k]
+        except Exception:
+            return default
+
+    blk = _g("blocker_name") or f"Blocker {_g('blocker_id')}"
+    rsh = _g("rusher_name") or f"Rusher {_g('rusher_id')}"
+    outcome = ("a sack" if _g("sack_allowed") else "a hit" if _g("hit_allowed")
+               else "a hurry" if _g("hurry_allowed") else "no pressure")
+    won = int(_g("win_flag", 0)) == 1
+
+    cs = _control_summary(int(_g("game_id")), int(_g("play_id")),
+                          int(_g("blocker_id")), int(_g("rusher_id")))
+    if cs is None:
+        verdict = "won the rep" if won else "lost the rep"
+        return (f"**{blk}** vs **{rsh}** — the block {verdict}; "
+                f"PFF charged {outcome} on the play.")
+
+    d0, d1, dmin, _b0, b1, nsec = cs
+    moved = d0 - d1  # positive = rusher closed on the QB
+    if moved > 0.5:
+        motion = (f"the rusher closed from {d0:.0f} to {d1:.0f} yards of the QB "
+                  f"over {nsec:.1f}s")
+    elif moved < -0.5:
+        motion = (f"the blocker held the rusher off — distance to the QB grew "
+                  f"from {d0:.0f} to {d1:.0f} yards")
+    else:
+        motion = f"the rusher was held near {d0:.0f} yards from the QB"
+    shield = ("stayed shielding the QB" if b1 >= 0.5
+              else "got beaten to a side late")
+    verdict = "**won** this block" if won else "**lost** this block"
+    return (f"**{blk}** {verdict} vs **{rsh}**: {motion}, and the blocker "
+            f"{shield}. PFF charged {outcome}.")
+
+
+def rep_story_receiver(row) -> str:
+    """One-paragraph summary of a receiver-vs-defender rep (for a caption).
+
+    ``row`` is a receiver-matchups row: receiver in ``blocker_*``, defender in
+    ``rusher_*``, plus ``is_target`` / ``coverage_type``.
+    """
+    def _g(k, default=None):
+        try:
+            return row[k]
+        except Exception:
+            return default
+
+    rec = _g("blocker_name") or f"Receiver {_g('blocker_id')}"
+    dfn = _g("rusher_name") or "his defender"
+    cov = _g("coverage_type", "man")
+    targeted = bool(_g("is_target", False))
+
+    cs = _control_summary(int(_g("game_id")), int(_g("play_id")),
+                          int(_g("blocker_id")), int(_g("rusher_id")))
+    tgt_txt = "the ball came his way" if targeted else "he was not the target"
+    if cs is None:
+        return (f"**{rec}** vs **{dfn}** in {cov} coverage — same control engine "
+                f"as pass protection, applied to the route. On this play {tgt_txt}.")
+
+    # For a receiver, "control" of the defender over the route is what we show.
+    _d0, _d1, _dmin, b0, b1, nsec = cs
+    sep = ("created separation late" if b1 < b0 else "was shadowed throughout")
+    return (f"**{rec}** vs **{dfn}** ({cov} coverage, {nsec:.1f}s route): the "
+            f"receiver {sep}. On this play {tgt_txt}. Same geometry as the "
+            f"pass-block engine — no ground-truth label here, so this is a bonus view.")
+
+
 if __name__ == "__main__":
     print("story.py demo —  upstream source:", up.upstream_source())
     result = build_story()
