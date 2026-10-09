@@ -56,9 +56,13 @@ def run_pipeline(n_games: int) -> dict:
     return pipeline.run(n_games=n_games, use_cache=True)
 
 
-def load_cached_leaderboard(n_games: int):
-    """Try to load a previously-saved leaderboard without recomputing."""
-    return C.cache_read(f"leaderboard_{n_games}games")
+def load_cached_leaderboard(n_games):
+    """Try to load a previously-saved leaderboard without recomputing.
+
+    The pipeline tags caches 'all' when n_games is None, else the game count.
+    """
+    tag = "all" if n_games is None else str(n_games)
+    return C.cache_read(f"leaderboard_{tag}games")
 
 
 def chart_path(name: str):
@@ -67,22 +71,64 @@ def chart_path(name: str):
 
 
 # --------------------------------------------------------------------------- #
+# Human-readable column labels (so no raw snake_case / ids reach the viewer)
+# --------------------------------------------------------------------------- #
+LEADERBOARD_LABELS = {
+    "blocker_name": "Player",
+    "blocker_pos": "Pos",
+    "team": "Team",
+    "n_reps": "Blocks graded",
+    "win_rate_shrunk": "Win rate",            # headline (sample-size corrected)
+    "adj_win_rate": "Win rate (vs opp.)",     # opponent-adjusted
+}
+REPS_LABELS = {
+    "blocker_name": "Blocker",
+    "rusher_name": "Rusher",
+    "blocker_pos": "Pos",
+    "outcome": "Outcome",
+    "win_score": "Control grade",
+    "ground_given_up": "Ground given up (yds)",
+    "sep_min": "Closest the blocker got (yds)",
+    "min_rusher_to_qb_dist": "Rusher's closest to QB (yds)",
+    "betweenness_mean": "Shielded QB (0-1)",
+}
+
+
+def rename_for_display(df, labels):
+    """Return a copy with only the labelled columns present, renamed to labels."""
+    cols = [c for c in labels if c in df.columns]
+    return df[cols].rename(columns={c: labels[c] for c in cols})
+
+
+def rep_outcome(r):
+    """Human outcome string for a scored rep row."""
+    if r.get("sack_allowed"):
+        return "Sack"
+    if r.get("hit_allowed"):
+        return "Hit"
+    if r.get("hurry_allowed"):
+        return "Hurry"
+    return "Clean"
+
+
+# --------------------------------------------------------------------------- #
 # Sidebar controls
 # --------------------------------------------------------------------------- #
 st.sidebar.title("Matchup Control")
 st.sidebar.caption("Grading one-on-one pass-protection battles from tracking data")
 
-n_games = st.sidebar.slider("Games to analyse", min_value=1, max_value=122, value=5, step=1)
-run_clicked = st.sidebar.button("Run pipeline", type="primary")
+# Always analyse all games; no games slider.
+n_games = None  # None => all games in pipeline.run()
+run_clicked = st.sidebar.button("Run pipeline (all games)", type="primary")
 st.sidebar.caption(
-    "Loads cached results instantly. Click **Run pipeline** to (re)compute — "
-    "that can take a while for many games."
+    "Analyses all available games. Loads cached results instantly; click "
+    "**Run pipeline** to (re)compute from scratch."
 )
 
 # Decide what to show: a fresh run, or whatever is cached.
 result = None
 if run_clicked:
-    with st.spinner(f"Running pipeline on {n_games} games…"):
+    with st.spinner("Running pipeline on all games… this can take a few minutes."):
         result = run_pipeline(n_games)
     st.session_state["last_result"] = result
 elif "last_result" in st.session_state:
@@ -100,8 +146,8 @@ st.markdown(
 
 if result is None:
     st.info(
-        "No results loaded yet. Pick the number of games in the sidebar and "
-        "click **Run pipeline**. Showing any cached leaderboard below if present."
+        "No results loaded yet. Click **Run pipeline (all games)** in the sidebar. "
+        "Showing any cached leaderboard below if present."
     )
     board = load_cached_leaderboard(n_games)
     if board is not None:
@@ -141,114 +187,203 @@ for key, label in [
 
 
 # --------------------------------------------------------------------------- #
-# Tabs: Leaderboard · Charts · Reps explorer · What predicts a loss
+# Tabs: three question-driven views + the two bonus heads
+#   Players    → "who is good?"
+#   How it works → "does the metric work?" (validation + method)
+#   Film room  → "what happened on this block?" (pick a rep, see the visual)
 # --------------------------------------------------------------------------- #
-tab_board, tab_charts, tab_reps, tab_imp, tab_play, tab_recv, tab_story = st.tabs(
-    ["🏆 Leaderboard", "📊 Charts", "🔍 Reps explorer", "🧠 What predicts a loss",
-     "🎯 Play visual", "🏃 Receiver head", "📖 Story"]
+tab_players, tab_how, tab_film, tab_recv, tab_story = st.tabs(
+    ["🏆 Players", "📊 How it works", "🎬 Film room", "🏃 Receiver head", "📖 Story"]
 )
 
-with tab_board:
+# ===== TAB 1: PLAYERS =======================================================
+with tab_players:
     board = result.get("leaderboard")
     if board is None or len(board) == 0:
         st.info("No leaderboard produced (leaderboard step may not have run).")
     else:
-        st.subheader("Blocker leaderboard")
-        st.caption("Offensive linemen only, ranked by opponent-adjusted score.")
-        min_reps = st.slider("Minimum reps", 1, 60, 10)
-        if "n_reps" in board.columns:
-            view = board[board["n_reps"] >= min_reps]
+        st.subheader("Who protects the quarterback best?")
+        st.caption(
+            "Each lineman graded across every pass-block rep. **Win rate** is the "
+            "share of blocks he won, corrected for how many reps we have on him. "
+            "**Win rate (vs opp.)** adjusts for how good the rushers he faced were — "
+            "higher than his raw win rate means he beat tough competition."
+        )
+
+        # ---- Filters: scope, team, position --------------------------------
+        f1, f2, f3 = st.columns(3)
+        scope = f1.selectbox("Scope", ["All games", "By team"], index=0,
+                             help="Narrow the leaderboard to a single team's linemen.")
+        teams = sorted(board["team"].dropna().unique().tolist()) \
+            if "team" in board.columns else []
+        team_pick = None
+        if scope == "By team" and teams:
+            team_pick = f2.selectbox("Team", teams)
         else:
-            view = board
-        st.dataframe(view, use_container_width=True, height=520)
+            f2.selectbox("Team", ["(all teams)"], disabled=True)
 
-with tab_charts:
-    charts = [
-        ("fig_score_distribution.png", "Win-score distribution: clean vs pressure reps"),
-        ("fig_feature_importance.png", "What separates a won block from a lost one"),
-        ("fig_validation.png", "Validation vs PFF labels (ROC + score separation)"),
-    ]
-    any_chart = False
-    for fname, caption in charts:
-        p = chart_path(fname)
-        if p is not None:
-            st.image(str(p), caption=caption, use_container_width=True)
-            any_chart = True
-    if not any_chart:
-        st.info("No charts found yet — run the pipeline to generate them.")
+        pos_opts = ["All positions"] + (
+            sorted(board["blocker_pos"].dropna().unique().tolist())
+            if "blocker_pos" in board.columns else []
+        )
+        pos_pick = f3.selectbox("Position", pos_opts, index=0)
 
-with tab_reps:
-    if scored is None or len(scored) == 0:
-        st.info("No scored reps available.")
+        min_reps = st.slider("Minimum blocks graded", 1, 60, 10,
+                             help="Hide small-sample players whose numbers are noisy.")
+
+        view = board
+        if "n_reps" in view.columns:
+            view = view[view["n_reps"] >= min_reps]
+        if team_pick is not None and "team" in view.columns:
+            view = view[view["team"] == team_pick]
+        if pos_pick != "All positions" and "blocker_pos" in view.columns:
+            view = view[view["blocker_pos"] == pos_pick]
+
+        display = rename_for_display(view, LEADERBOARD_LABELS)
+        # Show win rates as percentages for readability.
+        for col in ("Win rate", "Win rate (vs opp.)"):
+            if col in display.columns:
+                display[col] = (display[col] * 100).round(1)
+        st.dataframe(
+            display, use_container_width=True, height=520, hide_index=True,
+            column_config={
+                "Win rate": st.column_config.NumberColumn(format="%.1f%%"),
+                "Win rate (vs opp.)": st.column_config.NumberColumn(format="%.1f%%"),
+            },
+        )
+
+        with st.expander("ℹ️ How to read this table"):
+            st.markdown(
+                "- **Win rate** — % of one-on-one blocks this lineman won. The headline "
+                "number, already corrected so a player with very few reps isn't flattered.\n"
+                "- **Win rate (vs opp.)** — the same, but crediting him more for beating "
+                "strong rushers and less for beating weak ones.\n"
+                "- **Blocks graded** — his sample size. Trust high-rep players more.\n\n"
+                "A block is 'won' when the lineman kept the rusher away from the QB and "
+                "stayed attached to him — measured purely from tracking geometry, then "
+                "validated against real PFF pressure outcomes (see *How it works*)."
+            )
+            with st.expander("Advanced columns (margins, confidence range)"):
+                adv_cols = [c for c in ["blocker_name", "mean_win_score",
+                                        "adj_mean_win_score", "ci_low", "ci_high"]
+                            if c in view.columns]
+                st.caption("Control margin = how *decisively* he wins, not just how often. "
+                           "CI = the range his true win rate likely falls in.")
+                st.dataframe(view[adv_cols].rename(columns={
+                    "blocker_name": "Player", "mean_win_score": "Control margin",
+                    "adj_mean_win_score": "Control margin (vs opp.)",
+                    "ci_low": "CI low", "ci_high": "CI high"}),
+                    use_container_width=True, hide_index=True)
+
+# ===== TAB 2: HOW IT WORKS (validation + method) ============================
+with tab_how:
+    st.subheader("How the score is built")
+
+    st.markdown("""
+**The unit is one rep: one blocker against the one rusher PFF says he was
+assigned to.** We take both players' tracking from the snap to the moment the
+ball leaves the QB's hand and compute a handful of geometric features that
+describe pass protection:
+
+- **Ground given up** — how much the rusher closed the distance to the QB over
+  the rep. The core feature: a lost block is one where the rusher gets to the QB.
+- **Closest the rusher got to the QB** — the minimum rusher-to-QB distance.
+- **Separation** — the blocker-to-rusher gap (mean and minimum). Staying attached
+  is good; a growing gap means the rusher is slipping the block.
+- **Betweenness** — whether the blocker's body stays on the line between the
+  rusher and the QB (1 = perfectly shielding, 0 = beaten to a side).
+- **Mirroring** — how well the blocker's movement direction matches the rusher's.
+- **Rusher speed / acceleration late in the rep** — a rusher still accelerating at
+  the QB near the end is winning.
+
+All features are signed so that **higher = the blocker won**.
+""")
+
+    st.markdown("""
+**Turning features into one number.** We don't hand-pick weights for the final
+grade. Instead a gradient-boosted tree model (sklearn `HistGradientBoostingClassifier`)
+is trained to predict the real outcome — did this rep concede a hit, hurry, or
+sack (PFF's `pressure_allowed`). The model's predicted pressure probability is
+flipped into the **control grade**: high grade = low modelled chance of pressure
+= the blocker won. Using the model, rather than fixed weights, lets the metric
+learn interactions — e.g. giving up ground only matters when separation also
+collapses — that a simple weighted sum would miss.
+""")
+
+    auc_v = validation.get("auc")
+    if isinstance(auc_v, (int, float)):
+        st.markdown(
+            f"**Validation — AUC = {auc_v:.2f}.** Take one rep that gave up pressure and "
+            "one that didn't; the tracking-only grade ranks the worse block lower "
+            f"about **{auc_v*100:.0f}%** of the time (50% = a coin flip). The grade is "
+            "built from geometry alone and never sees the PFF label, so this is a real "
+            "check that it measures blocking."
+        )
     else:
-        st.subheader("Per-rep explorer")
-        cols_pref = [
-            "game_id", "play_id", "blocker_name", "blocker_pos", "rusher_name",
-            "block_type", "pressure_allowed", "win_score", "win_flag",
-            "ground_given_up", "sep_min", "min_rusher_to_qb_dist",
-        ]
-        show_cols = [c for c in cols_pref if c in scored.columns]
-        only_pressure = st.checkbox("Only reps where pressure was allowed", value=False)
-        view = scored
-        if only_pressure and "pressure_allowed" in view.columns:
-            view = view[view["pressure_allowed"] == 1]
-        if "win_score" in view.columns:
-            view = view.sort_values("win_score")
-        st.caption(f"{len(view):,} reps (sorted worst-blocked first).")
-        st.dataframe(view[show_cols] if show_cols else view,
-                     use_container_width=True, height=520)
+        st.info("Run the pipeline to compute validation.")
 
-with tab_imp:
+    # Charts, constrained to a sensible width (not full-page).
+    cols = st.columns([1, 1])
+    v = chart_path("fig_validation.png")
+    if v:
+        cols[0].image(str(v), caption="Grade vs real PFF pressure outcomes")
+    d = chart_path("fig_score_distribution.png")
+    if d:
+        cols[1].image(str(d), caption="Clean blocks grade higher than pressure blocks")
+
+    st.divider()
+    st.markdown("**Which features drive the grade?**")
+    st.caption("Permutation importance: how much the model's accuracy drops when each "
+               "feature is scrambled. The taller bars are the geometry that most "
+               "separates a won block from a lost one.")
     imp = result.get("feature_importance")
-    if imp is None or len(imp) == 0:
-        st.info("No feature-importance table available.")
+    if imp is not None and {"feature", "importance"}.issubset(getattr(imp, "columns", [])):
+        # Keep the chart compact by placing it in a narrower column.
+        ic = st.columns([2, 1])
+        ic[0].bar_chart(imp.set_index("feature")["importance"], height=320)
     else:
-        st.subheader("What predicts a lost block")
-        st.caption("Permutation importance: how much each tracking feature "
-                   "matters for predicting a conceded pressure.")
-        st.dataframe(imp, use_container_width=True)
-        if {"feature", "importance"}.issubset(imp.columns):
-            st.bar_chart(imp.set_index("feature")["importance"])
+        ip = chart_path("fig_feature_importance.png")
+        if ip:
+            st.columns([2, 1])[0].image(str(ip))
 
+    st.markdown("""
+**Opponent adjustment.** A win rate is inflated by feasting on weak rushers. We
+estimate each rusher's difficulty from how blockers fare against him on average,
+then re-center every rep by that rusher's effect. The *vs opp.* columns on the
+Players tab use this adjusted grade, so beating a star edge rusher counts for
+more than stonewalling a backup.
+""")
 
-# --------------------------------------------------------------------------- #
-# Play visual — the signature two-panel figure for one rep
-# --------------------------------------------------------------------------- #
-with tab_play:
-    if viz is None:
-        st.info("viz module not available.")
-    elif scored is None or len(scored) == 0:
-        st.info("Run the pipeline first to pick a rep.")
+# ===== TAB 3: FILM ROOM (pick a rep → see the visual) =======================
+with tab_film:
+    if viz is None or scored is None or len(scored) == 0:
+        st.info("Run the pipeline first, then pick a block to study.")
     else:
-        st.subheader("One rep: field paths + control over time")
-        st.caption("Pick a blocker-vs-rusher rep. ● = snap, ✕ = end of rep. "
-                   "On a lost rep the rusher→QB distance (red, bottom) collapses.")
+        st.subheader("Study one block")
+        st.caption("Pick a matchup to see the two-panel breakdown: the players' paths on "
+                   "the field (top) and who was winning moment-to-moment (bottom). "
+                   "● = snap, ✕ = end of rep.")
 
         paired = scored[scored.get("pairing_ok", True) == True] \
             if "pairing_ok" in scored.columns else scored
-
-        # Default to the worst-blocked (lowest win_score) rep for drama.
-        default_idx = 0
-        if "win_score" in paired.columns and len(paired):
+        if "win_score" in paired.columns:
             paired = paired.sort_values("win_score")
 
-        # Build human-readable options: "blocker vs rusher — game/play (outcome)"
+        col_f1, col_f2 = st.columns([3, 1])
+        worst_first = col_f2.checkbox("Worst-blocked first", value=True)
+        opts = (paired if worst_first else paired.iloc[::-1]).head(300).reset_index(drop=True)
+
         def _label(r):
-            out = "clean"
-            if r.get("sack_allowed"): out = "SACK"
-            elif r.get("hit_allowed"): out = "HIT"
-            elif r.get("hurry_allowed"): out = "HURRY"
             bn = r.get("blocker_name", r.get("blocker_id"))
             rn = r.get("rusher_name", r.get("rusher_id"))
-            return f"{bn} vs {rn} — {int(r['game_id'])}/{int(r['play_id'])} ({out})"
+            return f"{bn} vs {rn}  —  {rep_outcome(r)}  (game {int(r['game_id'])})"
 
-        opts = paired.head(300).reset_index(drop=True)
         if len(opts) == 0:
             st.info("No paired reps to visualise.")
         else:
             labels = [_label(r) for _, r in opts.iterrows()]
-            pick = st.selectbox("Choose a rep (worst-blocked first)", range(len(labels)),
-                                format_func=lambda i: labels[i])
+            pick = col_f1.selectbox("Choose a block", range(len(labels)),
+                                    format_func=lambda i: labels[i])
             row = opts.iloc[pick]
             try:
                 fig = viz.plot_matchup(
@@ -258,6 +393,27 @@ with tab_play:
                 st.pyplot(fig, use_container_width=True)
             except Exception as e:
                 st.error(f"Could not render this rep: {e}")
+
+            with st.expander("🔧 Under the hood — the geometry for this block"):
+                st.caption("The raw tracking measurements this block was graded on.")
+                feat_row = {k: row.get(k) for k in REPS_LABELS if k in row.index}
+                st.dataframe(
+                    pd.DataFrame([feat_row]).rename(columns=REPS_LABELS),
+                    use_container_width=True, hide_index=True,
+                )
+
+            st.divider()
+            st.markdown("**Browse all blocks**")
+            only_pressure = st.checkbox("Only blocks that gave up pressure", value=False)
+            tbl = scored
+            if only_pressure and "pressure_allowed" in tbl.columns:
+                tbl = tbl[tbl["pressure_allowed"] == 1]
+            if "win_score" in tbl.columns:
+                tbl = tbl.sort_values("win_score")
+            tbl = tbl.assign(outcome=tbl.apply(rep_outcome, axis=1))
+            st.caption(f"{len(tbl):,} blocks (worst-graded first).")
+            st.dataframe(rename_for_display(tbl, REPS_LABELS),
+                         use_container_width=True, height=360, hide_index=True)
 
 
 # --------------------------------------------------------------------------- #
