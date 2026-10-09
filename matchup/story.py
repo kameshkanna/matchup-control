@@ -39,16 +39,26 @@ from matchup import evidence, leaderboard, validate, viz
 from matchup.config import CACHE_DIR, _make_synthetic_scored
 
 
-def _load_scored() -> tuple[pd.DataFrame, str]:
-    """Return a ``scored`` frame and its provenance ('pipeline' | 'synthetic')."""
+def _load_scored(n_games: int = 15) -> tuple[pd.DataFrame, str]:
+    """Return a ``scored`` frame and its provenance ('pipeline' | 'synthetic').
+
+    Person A's entry point is ``pipeline.run(n_games=...)``, which returns a dict
+    with a ``'scored'`` key. (``score.build_scored`` needs a matchups table, so it
+    is not a no-arg call, and ``pipeline`` has no ``build_scored``.) Falls back to
+    the shared synthetic generator only if the pipeline is unavailable or errors.
+    """
     try:
-        from matchup.pipeline import build_scored  # Person A, Task 9
+        from matchup.pipeline import run as pipeline_run  # Person A, Task 9
     except ImportError:
         return _make_synthetic_scored(n_reps=600, seed=0), "synthetic"
     try:
-        return build_scored(), "pipeline"
+        result = pipeline_run(n_games=n_games)
+        scored = result.get("scored")
+        if scored is not None and len(scored):
+            return scored, "pipeline"
     except Exception:
-        return _make_synthetic_scored(n_reps=600, seed=0), "synthetic"
+        pass
+    return _make_synthetic_scored(n_reps=600, seed=0), "synthetic"
 
 
 def _scored_with_adjustment(scored: pd.DataFrame) -> pd.DataFrame:
@@ -114,10 +124,14 @@ def build_story(
     lb_top = lb.sort_values(sort_col, ascending=False).head(top_n).reset_index(drop=True)
 
     by = "rusher_pos" if "rusher_pos" in scored.columns else "block_type"
-    fig_head = evidence.plot_headline_comparison(scored, by=by)
-    p = out_dir / "story_3_headline_comparison.png"
-    fig_head.savefig(p, dpi=120)
-    figures["headline_comparison"] = str(p)
+    headline_note = ""
+    try:
+        fig_head = evidence.plot_headline_comparison(scored, by=by)
+        p = out_dir / "story_3_headline_comparison.png"
+        fig_head.savefig(p, dpi=120)
+        figures["headline_comparison"] = str(p)
+    except Exception as exc:  # don't let evidence's yerr bug on real data sink the story
+        headline_note = f"{type(exc).__name__}: {exc}"
 
     meta = {
         "scored_source": source,
@@ -126,6 +140,7 @@ def build_story(
         "golden": golden,
         "hero_visual_ok": hero_ok,
         "hero_visual_note": hero_note,
+        "headline_note": headline_note,
     }
 
     narrative_md = _render_markdown(meta, report, lb_top, figures, by)
@@ -222,7 +237,7 @@ per-blocker leaderboard (shrunk for small samples):
 
 And the same scored population, broken out by `{by}`:
 
-![headline comparison]({Path(figures['headline_comparison']).name})
+{(f"![headline comparison]({Path(figures['headline_comparison']).name})" if 'headline_comparison' in figures else f"_Headline figure unavailable: {meta.get('headline_note')}_")}
 
 ## One-line pitch
 
