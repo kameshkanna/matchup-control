@@ -87,13 +87,31 @@ def run(n_games: int | None = 15, use_cache: bool = True) -> dict:
     # gives a 0-100 score where higher = blocker won.)
     try:
         from . import validate
-        model, feats = score.fit_gbm_scorer(scored)
-        scored = score.gbm_win_score(scored, model, feats)
+        # feature_frame carries the GBM features + label (output of build_scored),
+        # BEFORE production gbm columns are applied. Both the production fit and
+        # the OOF validation consume this same frame.
+        feature_frame = scored
+        model, feats = score.fit_gbm_scorer(feature_frame)
+        # PRODUCTION scoring: one model fit on all reps grades every rep. This is
+        # the deliverable the leaderboard ranks on.
+        scored = score.gbm_win_score(feature_frame, model, feats)
         result["scored"] = scored
         result["gbm_model"] = model
         result["gbm_features"] = feats
-        result["validation"] = validate.validation_report(scored)
         result["feature_importance"] = score.gbm_feature_importance(scored, model, feats)
+
+        # In-sample validation (optimistic): the model has seen every rep it is
+        # graded on, so this AUC is inflated. Kept only for comparison.
+        result["validation_insample"] = validate.validation_report(scored)
+
+        # OOF validation (honest): each rep is scored by a model that did not
+        # train on it. This is the number to trust.
+        try:
+            oof = score.oof_gbm_scores(feature_frame, features=feats)
+            result["validation"] = validate.validation_report(oof)
+            result["cv_strategy"] = oof.attrs.get("cv_strategy", "unknown")
+        except Exception as e:
+            result["validation_oof_error"] = str(e)
     except Exception as e:
         result["validation_error"] = str(e)
 
@@ -155,7 +173,13 @@ def _summarise(result: dict) -> str:
             f"mean win_score | pressure=1: {ok[ok.pressure_allowed==1].win_score.mean():.3f}",
         ]
     if "validation" in result:
-        lines.append(f"validation: {result['validation']}")
+        lines.append(f"validation (OOF, honest):     {result['validation']}")
+    if "cv_strategy" in result:
+        lines.append(f"OOF cv_strategy: {result['cv_strategy']}")
+    if "validation_insample" in result:
+        lines.append(f"validation (in-sample, optimistic): {result['validation_insample']}")
+    if "validation_oof_error" in result:
+        lines.append(f"(OOF validation failed: {result['validation_oof_error']})")
     if "validation_error" in result:
         lines.append(f"(validate.py not ready yet: {result['validation_error']})")
     if "feature_importance" in result:

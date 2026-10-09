@@ -285,6 +285,154 @@ def gbm_win_score(scored: pd.DataFrame, model, features: list[str]) -> pd.DataFr
     return df
 
 
+def oof_gbm_scores(
+    scored: pd.DataFrame,
+    features: list[str] | None = None,
+    n_splits: int = 5,
+    group_col: str = "game_id",
+    random_state: int = 0,
+) -> pd.DataFrame:
+    """Out-of-fold (OOF) GBM scores for HONEST validation.
+
+    Returns a COPY of ``scored`` carrying the same output columns
+    :func:`gbm_win_score` produces (``win_score``, ``win_flag``,
+    ``pressure_prob``, ``control_0_100``, and ``win_score_linear`` preserved
+    when already present), except every predicted probability is produced by a
+    model that was NOT trained on that rep. This is the number you report as the
+    model's validation AUC.
+
+    Why this exists (leakage)
+    -------------------------
+    The production path fits one GBM on all reps and then scores those same reps
+    (:func:`fit_gbm_scorer` -> :func:`gbm_win_score`). Validating on that frame
+    is a resubstitution estimate: the model has seen every row it is graded on,
+    so the AUC is optimistically inflated (the model memorised the training
+    reps). OOF scoring removes that leak by cross-validation — each rep is scored
+    only by a fold model that held it out of training.
+
+    Grouped vs stratified folds
+    ----------------------------
+    Reps from the same game share play context, personnel, and opponent, so a
+    rep in the training split can leak game-level information about a sibling rep
+    in the test split. The honest test for this tool is "grade a game you did not
+    train on", so when at least ``n_splits`` distinct ``group_col`` values exist
+    we use :class:`~sklearn.model_selection.GroupKFold` to hold out whole games
+    per fold. When fewer groups than splits are available (e.g. only one game is
+    present locally), that is impossible, so we FALL BACK to
+    :class:`~sklearn.model_selection.StratifiedKFold` stratified on
+    ``pressure_allowed``. The strategy actually used is recorded on
+    ``result.attrs['cv_strategy']`` so the pipeline/validation can surface it.
+
+    Scope note (inherent leak)
+    ---------------------------
+    ``win_score`` is itself a pressure predictor and the leaderboard ranks on it,
+    so a residual label-informed signal is baked into the tool by design; OOF
+    scoring fixes the train-on-test leak only, not that inherent coupling.
+
+    Parameters
+    ----------
+    scored:
+        A ``scored``-schema frame already carrying the GBM feature columns plus
+        ``pressure_allowed``, ``pairing_ok`` and ``group_col``. This should be the
+        feature frame from :func:`build_scored` (the same input
+        :func:`fit_gbm_scorer` consumes), not a frame that has had production GBM
+        columns applied in a way that would alter the feature set.
+    features:
+        Feature columns to train on. Defaults to the :data:`GBM_FEATURES` present
+        in ``scored``.
+    n_splits:
+        Number of cross-validation folds.
+    group_col:
+        Column identifying the group to hold out per fold (default ``game_id``).
+    random_state:
+        Seed for the stratified fallback (GroupKFold is deterministic).
+
+    Returns
+    -------
+    pandas.DataFrame
+        A copy of ``scored`` with OOF ``win_score`` / ``win_flag`` /
+        ``pressure_prob`` / ``control_0_100``. Non-usable reps (``pairing_ok`` is
+        False, non-finite features, or unknown label) keep all their rows but get
+        NaN ``win_score`` and ``win_flag`` 0, matching the rest of the codebase.
+        ``result.attrs['cv_strategy']`` records the fold strategy used.
+
+    Notes
+    -----
+    These OOF scores are for validation only. The full-data model from
+    :func:`fit_gbm_scorer` + :func:`gbm_win_score` remains the PRODUCTION scorer
+    that grades every rep for the leaderboard.
+    """
+    from sklearn.ensemble import HistGradientBoostingClassifier
+    from sklearn.model_selection import GroupKFold, StratifiedKFold
+
+    df = scored.copy()
+    feats = features or [f for f in GBM_FEATURES if f in df.columns]
+
+    # Preserve the linear score the GBM path keeps, matching gbm_win_score.
+    if "win_score" in df.columns and "win_score_linear" not in df.columns:
+        df["win_score_linear"] = df["win_score"]
+
+    # Default (non-usable) outputs; filled in-place for scored reps below.
+    n = len(df)
+    pressure_prob = np.full(n, np.nan)
+
+    # Positional index of reps eligible for fit/predict: usable pairing, finite
+    # features, known label. Everything else stays NaN (never dropped).
+    X_all = df[feats].apply(pd.to_numeric, errors="coerce")
+    y_all = pd.to_numeric(df["pressure_allowed"], errors="coerce")
+    ok = X_all.notna().all(axis=1) & y_all.notna()
+    if "pairing_ok" in df.columns:
+        ok = ok & df["pairing_ok"].astype(bool)
+    ok_pos = np.flatnonzero(ok.to_numpy())
+
+    X = X_all.iloc[ok_pos]
+    y = y_all.iloc[ok_pos].astype(int)
+    if y.nunique() < 2 or len(y) < 50:
+        raise ValueError("not enough signal for OOF scoring (need both classes, >=50 usable reps)")
+
+    # Choose the fold strategy. GroupKFold needs at least n_splits groups.
+    groups = None
+    if group_col in df.columns:
+        groups = df[group_col].iloc[ok_pos].to_numpy()
+    n_groups = len(np.unique(groups)) if groups is not None else 0
+
+    if groups is not None and n_groups >= n_splits:
+        splitter = GroupKFold(n_splits=n_splits)
+        splits = splitter.split(X, y, groups=groups)
+        cv_strategy = "GroupKFold(game_id)"
+    else:
+        splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+        splits = splitter.split(X, y)
+        cv_strategy = (
+            "StratifiedKFold(stratified by pressure_allowed, "
+            f"fallback: {n_groups} groups < {n_splits} splits)"
+        )
+
+    # OOF loop: predict each test fold with a model trained on the other folds.
+    X_np = X.to_numpy(dtype=float)
+    y_np = y.to_numpy(dtype=int)
+    for train_idx, test_idx in splits:
+        fold = HistGradientBoostingClassifier(
+            max_depth=3, max_iter=200, learning_rate=0.06,
+            l2_regularization=1.0, class_weight="balanced", random_state=0,
+        )
+        fold.fit(X_np[train_idx], y_np[train_idx])
+        proba = fold.predict_proba(X_np[test_idx])[:, 1]
+        pressure_prob[ok_pos[test_idx]] = proba
+
+    # Same transforms as gbm_win_score so sign convention is identical.
+    eps = 1e-6
+    p_clip = np.clip(pressure_prob, eps, 1 - eps)
+    win_score = np.log((1 - p_clip) / p_clip)  # +ve => clean/won, -ve => lost
+
+    df["pressure_prob"] = pressure_prob
+    df["control_0_100"] = 100.0 * (1.0 - pressure_prob)
+    df["win_score"] = win_score
+    df["win_flag"] = np.where(np.isnan(win_score), 0, (win_score >= 0.0).astype(int))
+    df.attrs["cv_strategy"] = cv_strategy
+    return df
+
+
 def gbm_feature_importance(scored: pd.DataFrame, model, features: list[str],
                            n_repeats: int = 10) -> pd.DataFrame:
     """Permutation importance of each feature for predicting pressure.
