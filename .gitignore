@@ -1,0 +1,29 @@
+# ── Data (large raw CSVs — not source, kept local only) ─────────────────────
+data/
+
+# ── Generated artifacts / intermediates ────────────────────────────────────
+cache/
+
+# ── Agent / workflow scratch (plans, reviews, verification notes) ───────────
+.agents/
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Virtual environments ────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── OS / editor cruft ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
