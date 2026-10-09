@@ -26,12 +26,12 @@ import pandas as pd
 
 # --------------------------------------------------------------------------- #
 # Paths — resolved relative to this file (no absolute paths committed).
-# This file lives at <workspace>/matchup/config.py, so the workspace root is
-# two parents up. The dataset lives in nfl-big-data-bowl-regional-event-data/.
+# This file lives at <repo_root>/matchup/config.py, and the data/ folder is a
+# direct child of the repo root, so DATA_DIR is one parent up + "data".
 # --------------------------------------------------------------------------- #
 PACKAGE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = PACKAGE_DIR.parent
-DATA_DIR = ROOT_DIR / "nfl-big-data-bowl-regional-event-data" / "data"
+DATA_DIR = ROOT_DIR / "data"
 TRACKING_DIR = DATA_DIR / "tracking"
 CACHE_DIR = ROOT_DIR / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)

@@ -46,6 +46,11 @@ def get_matchups(game_id: int, play_id: int) -> pd.DataFrame:
     pff = pff[(pff.game_id == game_id) & (pff.play_id == play_id)].copy()
     players = io_load.load_players()[["nfl_id", "display_name", "position"]]
 
+    # Blocker's team = the offense = plays.possession_team for this play.
+    plays = io_load.load_plays()
+    prow = plays[(plays.game_id == game_id) & (plays.play_id == play_id)]
+    team = prow["possession_team"].iloc[0] if len(prow) else None
+
     snap_frame, end_frame = get_rep_window(play)
 
     # QB reference (the passer). If multiple, take the one tagged Pass.
@@ -90,6 +95,7 @@ def get_matchups(game_id: int, play_id: int) -> pd.DataFrame:
                 "is_switch": block_type == C.BLOCKTYPE_SWITCH,
                 "is_chip": block_type == C.BLOCKTYPE_CHIP,
                 "is_double": bool(has_assign and assign_counts.get(rid, 0) > 1),
+                "team": team,
                 "sack_allowed": _to01(b.get("pff_sack_allowed")),
                 "hurry_allowed": _to01(b.get("pff_hurry_allowed")),
                 "hit_allowed": _to01(b.get("pff_hit_allowed")),

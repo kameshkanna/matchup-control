@@ -132,6 +132,15 @@ def score_matchups(
     df = matchups_with_features.copy()
     w = weights or DEFAULT_WEIGHTS
 
+    # Calibrated weights (validate.calibrate_weights) PREDICT pressure, i.e. a
+    # blocker LOSS: a positive weight there means "more of this feature => more
+    # pressure". win_score is the opposite polarity (higher = blocker WON), so
+    # such weights must be negated before they drive the score. We detect the
+    # calibrated form by its "intercept" key; DEFAULT_WEIGHTS has none and is
+    # already in win polarity, so it is used as-is.
+    if "intercept" in w:
+        w = {k: -v for k, v in w.items() if k != "intercept"}
+
     # Vectorised standardised weighted sum over the feature columns.
     total = np.zeros(len(df), dtype=float)
     used = np.zeros(len(df), dtype=int)
