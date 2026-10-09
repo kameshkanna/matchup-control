@@ -15,7 +15,7 @@ pip install -r requirements.txt
 
 ## Data (NOT in this repo — 833 MB)
 
-Download / copy the dataset so the folder sits next to `matchup/`:
+Copy the dataset so the data folder sits next to `matchup/`:
 
 ```
 <repo-root>/
@@ -27,6 +27,7 @@ Download / copy the dataset so the folder sits next to `matchup/`:
 ```
 
 Paths are resolved in `matchup/config.py` — nothing is hardcoded elsewhere.
+The dataset's own column dictionary ships inside that data folder.
 
 ## Quick check
 

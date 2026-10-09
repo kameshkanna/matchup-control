@@ -1,19 +1,27 @@
-# ----- Data (833 MB, everyone has it locally; NEVER commit) -----
+# ----- Data (833 MB raw CSVs — everyone has it locally; NEVER commit) -----
 nfl-big-data-bowl-regional-event-data/
+data/
 
 # ----- Cache + generated artifacts -----
 cache/
 *.parquet
 *.png
 
+# ----- Agent / workflow scratch -----
+.agents/
+
 # ----- Python -----
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
 .venv/
 venv/
 env/
 .ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # ----- OS / editor -----
 .DS_Store
